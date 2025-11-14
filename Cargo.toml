@@ -1,0 +1,49 @@
+[package]
+name = "jscanify-wasm"
+version = "1.4.0"
+authors = ["ColonelParrot and contributors"]
+edition = "2021"
+license = "MIT"
+description = "Rust WASM port of jscanify - document scanner library"
+repository = "https://github.com/puffinsoft/jscanify"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = [
+    "console",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "ImageData",
+    "Navigator",
+    "Gpu",
+] }
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+futures-channel = "0.3"
+nalgebra = "0.33"
+photon-rs = "0.3"
+homography = "0.2"
+wgpu = "22"
+bytemuck = { version = "1.14", features = ["derive"] }
+imageproc = "0.25"
+gloo-console = "0.3.0"
+kornia = "0.1.9"
+
+[features]
+default = []
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+criterion = "0.5"
+
+[[bench]]
+name = "perspective_transform"
+harness = false
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
