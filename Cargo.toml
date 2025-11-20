@@ -25,7 +25,6 @@ js-sys = "0.3"
 futures-channel = "0.3"
 nalgebra = "0.33"
 photon-rs = "0.3"
-homography = "0.2"
 wgpu = "22"
 bytemuck = { version = "1.14", features = ["derive"] }
 imageproc = "0.25"

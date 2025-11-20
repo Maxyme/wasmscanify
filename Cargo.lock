@@ -1279,16 +1279,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
-name = "homography"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8bb075503f821539f9fae58fe699905b2e88d3b5dbd1480ce8d71809876cab2"
-dependencies = [
- "nalgebra 0.33.2",
- "num-traits",
-]
-
-[[package]]
 name = "image"
 version = "0.24.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1490,7 +1480,6 @@ dependencies = [
  "criterion",
  "futures-channel",
  "gloo-console",
- "homography",
  "imageproc 0.25.0",
  "js-sys",
  "kornia",

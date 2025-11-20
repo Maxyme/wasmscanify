@@ -1,10 +1,8 @@
-use imageproc::image::{GrayImage, RgbImage, Rgb};
+use imageproc::image::{GrayImage, RgbImage};
 use imageproc::image;
 use imageproc::edges::canny;
 use imageproc::hough::{detect_lines, LineDetectionOptions, PolarLine};
 use imageproc::geometric_transformations::{warp_into, Interpolation, Projection};
-use imageproc::rect::Rect;
-use imageproc::drawing::draw_polygon_mut;
 use std::f32::consts::PI;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::Clamped;
@@ -323,6 +321,423 @@ fn order_corners(points: &[Point; 4]) -> Option<[Point; 4]> {
     }
 }
 
+/// Find the best quadrilateral in a grayscale image using Hough transform
+/// 
+/// This is the core algorithm for document detection:
+/// 1. Apply Gaussian blur to reduce noise
+/// 2. Edge detection (Canny)
+/// 3. Hough transform to detect lines
+/// 4. Compute line intersections as potential corners
+/// 5. Score all possible quadrilaterals
+/// 6. Return the best quadrilateral
+fn find_best_quadrilateral(gray: &GrayImage) -> Result<Quadrilateral, String> {
+    let width = gray.width();
+    let height = gray.height();
+    
+    // Apply Gaussian blur to reduce noise
+    let blurred = imageproc::filter::gaussian_blur_f32(gray, 2.0);
+    
+    // Apply Canny edge detection
+    let edges = canny(&blurred, 50.0, 150.0);
+    
+    // Detect lines using Hough transform
+    let options = LineDetectionOptions {
+        vote_threshold: 80,         // Lower threshold for more sensitivity
+        suppression_radius: 15,     // Suppress nearby lines in Hough space
+    };
+    
+    let detected_lines = detect_lines(&edges, options);
+    
+    if detected_lines.len() < 4 {
+        return Err(format!("Not enough lines detected: {}", detected_lines.len()));
+    }
+    
+    // Convert polar lines to Cartesian form
+    let lines: Vec<Line> = detected_lines.iter()
+        .map(|pl| Line::from_polar(pl))
+        .collect();
+    
+    // Find all line intersections with geometric constraints
+    let mut corners = Vec::new();
+    
+    for i in 0..lines.len() {
+        for j in (i + 1)..lines.len() {
+            if let Some(point) = lines[i].intersect(&lines[j]) {
+                // Check if intersection is within image bounds (with some margin)
+                let margin = -50.0;
+                if point.x >= margin && point.x <= (width as f32 + margin) 
+                    && point.y >= margin && point.y <= (height as f32 + margin) {
+                    
+                    // Filter out very acute angles
+                    let angle = lines[i].angle_with(&lines[j]);
+                    let angle_diff = (angle - 90.0).abs();
+                    
+                    if angle_diff < 60.0 {
+                        corners.push(point);
+                    }
+                }
+            }
+        }
+    }
+    
+    if corners.len() < 4 {
+        return Err(format!("Not enough corners found: {}", corners.len()));
+    }
+    
+    // Generate and score all possible quadrilaterals
+    let min_area = (width * height) as f32 * 0.05; // At least 5% of image area
+    let mut best_quad: Option<Quadrilateral> = None;
+    let mut max_score = 0.0;
+    
+    let max_corners = corners.len().min(12);
+    
+    for i in 0..max_corners {
+        for j in (i + 1)..max_corners {
+            for k in (j + 1)..max_corners {
+                for l in (k + 1)..max_corners {
+                    let quad_corners = [corners[i], corners[j], corners[k], corners[l]];
+                    
+                    if let Some(ordered) = order_corners(&quad_corners) {
+                        let quad = Quadrilateral::new(ordered, &edges);
+                        
+                        if quad.is_valid(min_area) && quad.score > max_score {
+                            max_score = quad.score;
+                            best_quad = Some(quad);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    best_quad.ok_or_else(|| "No valid quadrilateral found".to_string())
+}
+
+/// Draw a quadrilateral on an RGB image with highlighted edges and corners
+/// 
+/// This function draws:
+/// - Green edges connecting the corners
+/// - Red filled circles at each corner point
+fn draw_quadrilateral_on_image(image: &mut RgbImage, quad: &Quadrilateral) {
+    // Draw the quadrilateral on the image
+    let polygon_points: Vec<imageproc::point::Point<i32>> = quad.corners
+        .iter()
+        .map(|p| imageproc::point::Point::new(p.x as i32, p.y as i32))
+        .collect();
+    
+    // Draw the quadrilateral edges in green
+    let green = imageproc::image::Rgb([0u8, 255u8, 0u8]);
+    for i in 0..4 {
+        let p1 = polygon_points[i];
+        let p2 = polygon_points[(i + 1) % 4];
+        imageproc::drawing::draw_line_segment_mut(
+            image,
+            (p1.x as f32, p1.y as f32),
+            (p2.x as f32, p2.y as f32),
+            green,
+        );
+    }
+    
+    // Draw corner points in red
+    let red = imageproc::image::Rgb([255u8, 0u8, 0u8]);
+    for point in &quad.corners {
+        imageproc::drawing::draw_filled_circle_mut(
+            image,
+            (point.x as i32, point.y as i32),
+            5,
+            red,
+        );
+    }
+}
+
+/// Draw source and destination corners for debugging homography
+/// 
+/// This function visualizes:
+/// - Source corners (original quadrilateral) in red
+/// - Destination corners (target rectangle) in blue
+/// - Lines connecting corresponding points in yellow
+fn draw_homography_debug(
+    image: &mut RgbImage,
+    src_corners: &[Point; 4],
+    dst_width: f32,
+    dst_height: f32,
+) {
+    let red = imageproc::image::Rgb([255u8, 0u8, 0u8]);
+    let blue = imageproc::image::Rgb([0u8, 0u8, 255u8]);
+    let yellow = imageproc::image::Rgb([255u8, 255u8, 0u8]);
+    
+    // Destination corners in the coordinate system of the original image
+    let dst_corners = [
+        Point { x: 0.0, y: 0.0 },                    // top-left
+        Point { x: dst_width, y: 0.0 },              // top-right
+        Point { x: dst_width, y: dst_height },       // bottom-right
+        Point { x: 0.0, y: dst_height },             // bottom-left
+    ];
+    
+    // Draw source corners (red) and edges
+    for i in 0..4 {
+        let p1 = &src_corners[i];
+        let p2 = &src_corners[(i + 1) % 4];
+        
+        // Draw edge
+        imageproc::drawing::draw_line_segment_mut(
+            image,
+            (p1.x, p1.y),
+            (p2.x, p2.y),
+            red,
+        );
+        
+        // Draw corner
+        imageproc::drawing::draw_filled_circle_mut(
+            image,
+            (p1.x as i32, p1.y as i32),
+            7,
+            red,
+        );
+    }
+    
+    // Draw destination corners (blue) and edges - scaled to fit in image
+    let scale = 0.3; // Scale down to show in corner of image
+    let offset_x = 20.0;
+    let offset_y = 20.0;
+    
+    for i in 0..4 {
+        let p1 = Point {
+            x: dst_corners[i].x * scale + offset_x,
+            y: dst_corners[i].y * scale + offset_y,
+        };
+        let p2 = Point {
+            x: dst_corners[(i + 1) % 4].x * scale + offset_x,
+            y: dst_corners[(i + 1) % 4].y * scale + offset_y,
+        };
+        
+        // Draw edge
+        imageproc::drawing::draw_line_segment_mut(
+            image,
+            (p1.x, p1.y),
+            (p2.x, p2.y),
+            blue,
+        );
+        
+        // Draw corner
+        imageproc::drawing::draw_filled_circle_mut(
+            image,
+            (p1.x as i32, p1.y as i32),
+            7,
+            blue,
+        );
+    }
+    
+    // Draw correspondence lines from source to scaled destination
+    for i in 0..4 {
+        let src = &src_corners[i];
+        let dst_scaled = Point {
+            x: dst_corners[i].x * scale + offset_x,
+            y: dst_corners[i].y * scale + offset_y,
+        };
+        
+        imageproc::drawing::draw_line_segment_mut(
+            image,
+            (src.x, src.y),
+            (dst_scaled.x, dst_scaled.y),
+            yellow,
+        );
+    }
+}
+
+
+/// WASM-compatible function to detect document from ImageData and return highlighted quadrilateral or warped document
+/// 
+/// This function:
+/// 1. Converts ImageData (RGBA) to grayscale imageproc image
+/// 2. Detects document using Hough transform
+/// 3. Either draws the detected quadrilateral on the original image OR warps the document to fill the output
+/// 4. Returns the result as ImageData for use with WASM/JS
+/// 
+/// # Parameters
+/// * `image_data` - Input image as ImageData
+/// * `result_width` - Width of the output image
+/// * `result_height` - Height of the output image
+/// * `warp_document` - If true, returns the warped document; if false, returns the original with highlighted edges
+pub fn extract_paper_hough(
+    image_data: ImageData,
+    result_width: u32,
+    result_height: u32,
+    warp_document: bool,
+) -> Result<ImageData, JsValue> {
+    // Get image dimensions
+    let width = image_data.width();
+    let height = image_data.height();
+    let data = image_data.data().0;
+    
+    // Convert RGBA ImageData to RGB (skip alpha channel)
+    let rgb_data: Vec<u8> = data
+        .chunks(4)
+        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+        .collect();
+    
+    // Create RGB image from the data
+    let rgb_image = RgbImage::from_raw(width, height, rgb_data)
+        .ok_or_else(|| JsValue::from_str("Failed to create RGB image from ImageData"))?;
+    
+    // Convert to grayscale for processing
+    let gray = imageproc::image::imageops::grayscale(&rgb_image);
+    
+    // Find the best quadrilateral using the extracted method
+    let quad = find_best_quadrilateral(&gray)
+        .map_err(|e| JsValue::from_str(&e))?;
+
+    // Log detected corners for debugging   
+    web_sys::console::log_1(&format!(
+        "Detected corners: TL({:.1},{:.1}) TR({:.1},{:.1}) BR({:.1},{:.1}) BL({:.1},{:.1})",
+        quad.corners[0].x, quad.corners[0].y,
+        quad.corners[1].x, quad.corners[1].y,
+        quad.corners[2].x, quad.corners[2].y,
+        quad.corners[3].x, quad.corners[3].y
+    ).into());
+    
+    let final_image = if warp_document {
+        // Warp the document to fill the output image
+        let projection = compute_homography_matrix(&quad.corners, result_width as f32, result_height as f32);
+        let mut warped_image = RgbImage::new(result_width, result_height);
+        
+        warp_into(
+            &rgb_image,
+            &projection,
+            Interpolation::Bilinear,
+            imageproc::image::Rgb([255u8, 255u8, 255u8]), // White background
+            &mut warped_image,
+        );
+        
+        warped_image
+    } else {
+        // Create output image with highlighted quadrilateral
+        let mut output_image = rgb_image.clone();
+        
+        // Draw the quadrilateral with highlighted edges and corners
+        draw_quadrilateral_on_image(&mut output_image, &quad);
+        
+        // Resize output image to desired dimensions if different
+        if width != result_width || height != result_height {
+            imageproc::image::imageops::resize(
+                &output_image,
+                result_width,
+                result_height,
+                imageproc::image::imageops::FilterType::Lanczos3,
+            )
+        } else {
+            output_image
+        }
+    };
+    
+    // Convert RGB back to RGBA for ImageData
+    let rgba_data: Vec<u8> = final_image
+        .pixels()
+        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255u8])
+        .collect();
+    
+    // Create and return ImageData
+    ImageData::new_with_u8_clamped_array_and_sh(
+        Clamped(&rgba_data),
+        result_width,
+        result_height,
+    )
+    .map_err(|e| JsValue::from_str(&format!("Failed to create ImageData: {:?}", e)))
+}
+
+/// WASM-compatible function to visualize homography mapping for debugging
+/// 
+/// This function:
+/// 1. Detects the document quadrilateral
+/// 2. Draws the source quadrilateral in red
+/// 3. Draws a scaled-down destination rectangle in blue (in the corner)
+/// 4. Draws yellow lines connecting corresponding points
+/// 5. Returns the visualization for debugging
+#[wasm_bindgen]
+pub fn extract_paper_hough_debug(
+    image_data: ImageData,
+    result_width: u32,
+    result_height: u32,
+) -> Result<ImageData, JsValue> {
+    // Get image dimensions
+    let width = image_data.width();
+    let height = image_data.height();
+    let data = image_data.data().0;
+    
+    // Convert RGBA ImageData to RGB (skip alpha channel)
+    let rgb_data: Vec<u8> = data
+        .chunks(4)
+        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+        .collect();
+    
+    // Create RGB image from the data
+    let rgb_image = RgbImage::from_raw(width, height, rgb_data)
+        .ok_or_else(|| JsValue::from_str("Failed to create RGB image from ImageData"))?;
+    
+    // Convert to grayscale for processing
+    let gray = imageproc::image::imageops::grayscale(&rgb_image);
+    
+    // Find the best quadrilateral using the extracted method
+    let quad = find_best_quadrilateral(&gray)
+        .map_err(|e| JsValue::from_str(&e))?;
+
+    // Log detected corners for debugging   
+    web_sys::console::log_1(&format!(
+        "Detected corners: TL({:.1},{:.1}) TR({:.1},{:.1}) BR({:.1},{:.1}) BL({:.1},{:.1})",
+        quad.corners[0].x, quad.corners[0].y,
+        quad.corners[1].x, quad.corners[1].y,
+        quad.corners[2].x, quad.corners[2].y,
+        quad.corners[3].x, quad.corners[3].y
+    ).into());
+    
+    // Create output image with debug visualization
+    let mut output_image = rgb_image.clone();
+    
+    // Draw homography debug visualization
+    draw_homography_debug(&mut output_image, &quad.corners, result_width as f32, result_height as f32);
+    
+    // Convert RGB back to RGBA for ImageData
+    let rgba_data: Vec<u8> = output_image
+        .pixels()
+        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255u8])
+        .collect();
+    
+    // Create and return ImageData
+    ImageData::new_with_u8_clamped_array_and_sh(
+        Clamped(&rgba_data),
+        width,
+        height,
+    )
+    .map_err(|e| JsValue::from_str(&format!("Failed to create ImageData: {:?}", e)))
+}
+
+/// Compute perspective transform matrix for warping using Projection::from_control_points
+/// Maps source quadrilateral to destination rectangle
+fn compute_homography_matrix(src_corners: &[Point; 4], dst_width: f32, dst_height: f32) -> Projection {
+    // Source points (document corners in original image)
+    let from_points = [
+        (src_corners[0].x, src_corners[0].y), // top-left
+        (src_corners[1].x, src_corners[1].y), // top-right
+        (src_corners[2].x, src_corners[2].y), // bottom-right
+        (src_corners[3].x, src_corners[3].y), // bottom-left
+    ];
+    
+    // Destination points (corners of output rectangle)
+    let to_points = [
+        (0.0, 0.0),                   // top-left
+        (dst_width, 0.0),             // top-right
+        (dst_width, dst_height),      // bottom-right
+        (0.0, dst_height),            // bottom-left
+    ];
+    
+    // Use Projection::from_control_points which computes the homography correctly
+    // It maps from `from_points` to `to_points`
+    Projection::from_control_points(from_points, to_points)
+        .expect("Failed to compute projection from control points")
+}
+
+
+
 /// Example usage and test function
 #[cfg(test)]
 mod tests {
@@ -411,434 +826,4 @@ mod tests {
             non_white_ratio * 100.0
         );
     }
-}
-
-/// Main function to demonstrate usage
-/// 
-/// Example:
-/// ```no_run
-/// use lib_2::detect_document_hough;
-/// 
-/// let result = detect_document_hough("test_image.jpg");
-/// match result {
-///     Ok(quad) => {
-///         println!("Document detected!");
-///         println!("Corners: {:?}", quad.corners);
-///         println!("Score: {}", quad.score);
-///     }
-///     Err(e) => println!("Error: {}", e),
-/// }
-/// ```
-pub fn example_usage() {
-    // This function demonstrates how to use the document detection
-    let test_image = "test_document.jpg";
-    
-    match detect_document_hough(test_image) {
-        Ok(quad) => {
-            println!("Document detected successfully!");
-            println!("Top-left corner: ({}, {})", quad.corners[0].x, quad.corners[0].y);
-            println!("Top-right corner: ({}, {})", quad.corners[1].x, quad.corners[1].y);
-            println!("Bottom-right corner: ({}, {})", quad.corners[2].x, quad.corners[2].y);
-            println!("Bottom-left corner: ({}, {})", quad.corners[3].x, quad.corners[3].y);
-            println!("Detection score: {}", quad.score);
-            println!("Area: {} pixels", quad.area());
-        }
-        Err(e) => {
-            eprintln!("Failed to detect document: {}", e);
-        }
-    }
-}
-
-/// WASM-compatible function to detect document from ImageData and return highlighted quadrilateral
-/// 
-/// This function:
-/// 1. Converts ImageData (RGBA) to grayscale imageproc image
-/// 2. Detects document using Hough transform
-/// 3. Draws the detected quadrilateral on the original image
-/// 4. Returns the result as ImageData for use with WASM/JS
-pub fn extract_paper_hough(
-    image_data: ImageData,
-    result_width: u32,
-    result_height: u32,
-) -> Result<ImageData, JsValue> {
-    // Get image dimensions
-    let width = image_data.width();
-    let height = image_data.height();
-    let data = image_data.data().0;
-    
-    // Convert RGBA ImageData to RGB (skip alpha channel)
-    let rgb_data: Vec<u8> = data
-        .chunks(4)
-        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
-        .collect();
-    
-    // Create RGB image from the data
-    let rgb_image = RgbImage::from_raw(width, height, rgb_data)
-        .ok_or_else(|| JsValue::from_str("Failed to create RGB image from ImageData"))?;
-    
-    // Convert to grayscale for processing
-    let gray = imageproc::image::imageops::grayscale(&rgb_image);
-    
-    // Apply Gaussian blur to reduce noise
-    let blurred = imageproc::filter::gaussian_blur_f32(&gray, 2.0);
-    
-    // Apply Canny edge detection
-    let edges = canny(&blurred, 50.0, 150.0);
-    
-    // Detect lines using Hough transform
-    let options = LineDetectionOptions {
-        vote_threshold: 80,         // Lower threshold for more sensitivity
-        suppression_radius: 15,     // Suppress nearby lines in Hough space
-    };
-    
-    let detected_lines = detect_lines(&edges, options);
-    
-    if detected_lines.len() < 4 {
-        return Err(JsValue::from_str(&format!("Not enough lines detected: {}", detected_lines.len())));
-    }
-    
-    // Convert polar lines to Cartesian form
-    let lines: Vec<Line> = detected_lines.iter()
-        .map(|pl| Line::from_polar(pl))
-        .collect();
-    
-    // Find all line intersections with geometric constraints
-    let mut corners = Vec::new();
-    
-    for i in 0..lines.len() {
-        for j in (i + 1)..lines.len() {
-            if let Some(point) = lines[i].intersect(&lines[j]) {
-                // Check if intersection is within image bounds (with some margin)
-                let margin = -50.0;
-                if point.x >= margin && point.x <= (width as f32 + margin) 
-                    && point.y >= margin && point.y <= (height as f32 + margin) {
-                    
-                    // Filter out very acute angles
-                    let angle = lines[i].angle_with(&lines[j]);
-                    let angle_diff = (angle - 90.0).abs();
-                    
-                    if angle_diff < 60.0 {
-                        corners.push(point);
-                    }
-                }
-            }
-        }
-    }
-    
-    if corners.len() < 4 {
-        return Err(JsValue::from_str(&format!("Not enough corners found: {}", corners.len())));
-    }
-    
-    // Generate and score all possible quadrilaterals
-    let min_area = (width * height) as f32 * 0.05; // At least 5% of image area
-    let mut best_quad: Option<Quadrilateral> = None;
-    let mut max_score = 0.0;
-    
-    let max_corners = corners.len().min(12);
-    
-    for i in 0..max_corners {
-        for j in (i + 1)..max_corners {
-            for k in (j + 1)..max_corners {
-                for l in (k + 1)..max_corners {
-                    let quad_corners = [corners[i], corners[j], corners[k], corners[l]];
-                    
-                    if let Some(ordered) = order_corners(&quad_corners) {
-                        let quad = Quadrilateral::new(ordered, &edges);
-                        
-                        if quad.is_valid(min_area) && quad.score > max_score {
-                            max_score = quad.score;
-                            best_quad = Some(quad);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    let quad = best_quad.ok_or_else(|| JsValue::from_str("No valid quadrilateral found"))?;
-    
-    // Create output image with highlighted quadrilateral
-    let mut output_image = rgb_image.clone();
-    
-    // Draw the quadrilateral on the image
-    let polygon_points: Vec<imageproc::point::Point<i32>> = quad.corners
-        .iter()
-        .map(|p| imageproc::point::Point::new(p.x as i32, p.y as i32))
-        .collect();
-
-    // Log detected corners for debugging   
-    web_sys::console::log_1(&format!(
-        "Detected corners: TL({:.1},{:.1}) TR({:.1},{:.1}) BR({:.1},{:.1}) BL({:.1},{:.1})",
-        quad.corners[0].x, quad.corners[0].y,
-        quad.corners[1].x, quad.corners[1].y,
-        quad.corners[2].x, quad.corners[2].y,
-        quad.corners[3].x, quad.corners[3].y
-    ).into());
-    
-    // Draw the quadrilateral edges in green
-    let green = imageproc::image::Rgb([0u8, 255u8, 0u8]);
-    for i in 0..4 {
-        let p1 = polygon_points[i];
-        let p2 = polygon_points[(i + 1) % 4];
-        imageproc::drawing::draw_line_segment_mut(
-            &mut output_image,
-            (p1.x as f32, p1.y as f32),
-            (p2.x as f32, p2.y as f32),
-            green,
-        );
-    }
-    
-    // Draw corner points in red
-    let red = imageproc::image::Rgb([255u8, 0u8, 0u8]);
-    for point in &quad.corners {
-        imageproc::drawing::draw_filled_circle_mut(
-            &mut output_image,
-            (point.x as i32, point.y as i32),
-            5,
-            red,
-        );
-    }
-    
-    // Resize output image to desired dimensions if different
-    let final_image = if width != result_width || height != result_height {
-        imageproc::image::imageops::resize(
-            &output_image,
-            result_width,
-            result_height,
-            imageproc::image::imageops::FilterType::Lanczos3,
-        )
-    } else {
-        output_image
-    };
-    
-    // Convert RGB back to RGBA for ImageData
-    let rgba_data: Vec<u8> = final_image
-        .pixels()
-        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255u8])
-        .collect();
-    
-    // Create and return ImageData
-    ImageData::new_with_u8_clamped_array_and_sh(
-        Clamped(&rgba_data),
-        result_width,
-        result_height,
-    )
-    .map_err(|e| JsValue::from_str(&format!("Failed to create ImageData: {:?}", e)))
-}
-
-/// Compute perspective transform matrix for warping using homography crate
-/// Maps source quadrilateral to destination rectangle
-fn compute_homography_matrix(src_corners: &[Point; 4], dst_width: f32, dst_height: f32) -> Projection {
-    // Create homography computation instance
-    let mut hc = homography::HomographyComputation::<f32>::new();
-    
-    // Source points (document corners in original image)
-    let src_points = [
-        homography::geo::Point::new(src_corners[0].x, src_corners[0].y), // top-left
-        homography::geo::Point::new(src_corners[1].x, src_corners[1].y), // top-right
-        homography::geo::Point::new(src_corners[2].x, src_corners[2].y), // bottom-right
-        homography::geo::Point::new(src_corners[3].x, src_corners[3].y), // bottom-left
-    ];
-    
-    // Destination points (corners of output rectangle)
-    let dst_points = [
-        homography::geo::Point::new(0.0, 0.0),                          // top-left
-        homography::geo::Point::new(dst_width, 0.0),             // top-right
-        homography::geo::Point::new(dst_width, dst_height), // bottom-right
-        homography::geo::Point::new(0.0, dst_height),            // bottom-left
-    ];
-    
-    // Add point correspondences (from dst to src for inverse transform)
-    // warp_into needs the inverse transformation (from dst to src)
-    for i in 0..4 {
-        hc.add_point_correspondence(dst_points[i].clone(), src_points[i].clone());
-    }
-    
-    // Get restrictions and compute the homography solution
-    let restrictions = hc.get_restrictions();
-    let solution = restrictions.compute();
-    
-    // Extract the 3x3 matrix from the solution
-    //let h_matrix = solution.matrix;
-    let h_matrix = solution.matrix.try_inverse().expect("Homography matrix is not invertible");
-    
-    // Convert nalgebra Matrix3 to row-major f32 array for Projection
-    let matrix = [
-        h_matrix[(0, 0)] as f32, h_matrix[(0, 1)] as f32, h_matrix[(0, 2)] as f32,
-        h_matrix[(1, 0)] as f32, h_matrix[(1, 1)] as f32, h_matrix[(1, 2)] as f32,
-        h_matrix[(2, 0)] as f32, h_matrix[(2, 1)] as f32, h_matrix[(2, 2)] as f32,
-    ];
-    // let matrix_s = h_matrix.as_slice();
-    // let mut array: [f32; 9] = [0.0; 9]; // Initialize with default values
-    // array.copy_from_slice(matrix_s);
-    //
-    // web_sys::console::log_1(&format!(
-    //     "Homography matrix: [{:.3}, {:.3}, {:.3}, {:.3}, {:.3}, {:.3}, {:.6}, {:.6}, {:.3}]",
-    //     matrix[0], matrix[1], matrix[2],
-    //     matrix[3], matrix[4], matrix[5],
-    //     matrix[6], matrix[7], matrix[8]
-    // ).into());
-    
-    Projection::from_matrix(matrix).expect("Failed to create projection")
-}
-
-/// Core function to detect document and warp it to a rectangle
-/// 
-/// This function:
-/// 1. Detects document using Hough transform
-/// 2. Warps the detected quadrilateral to a rectangle using perspective transform
-/// 3. Returns the warped RgbImage
-pub fn detect_and_warp_document(
-    rgb_image: &RgbImage,
-    result_width: u32,
-    result_height: u32,
-) -> Result<RgbImage, String> {
-    let width = rgb_image.width();
-    let height = rgb_image.height();
-    
-    // Convert to grayscale for processing
-    let gray = imageproc::image::imageops::grayscale(rgb_image);
-    
-    // Apply Gaussian blur to reduce noise
-    let blurred = imageproc::filter::gaussian_blur_f32(&gray, 2.0);
-    
-    // Apply Canny edge detection
-    let edges = canny(&blurred, 50.0, 150.0);
-    
-    // Detect lines using Hough transform
-    let options = LineDetectionOptions {
-        vote_threshold: 80,         // Lower threshold for more sensitivity
-        suppression_radius: 15,     // Suppress nearby lines in Hough space
-    };
-    
-    let detected_lines = detect_lines(&edges, options);
-    
-    if detected_lines.len() < 4 {
-        return Err(format!("Not enough lines detected: {}", detected_lines.len()));
-    }
-    
-    // Convert polar lines to Cartesian form
-    let lines: Vec<Line> = detected_lines.iter()
-        .map(|pl| Line::from_polar(pl))
-        .collect();
-    
-    // Find all line intersections with geometric constraints
-    let mut corners = Vec::new();
-    
-    for i in 0..lines.len() {
-        for j in (i + 1)..lines.len() {
-            if let Some(point) = lines[i].intersect(&lines[j]) {
-                // Check if intersection is within image bounds (with some margin)
-                let margin = -50.0;
-                if point.x >= margin && point.x <= (width as f32 + margin) 
-                    && point.y >= margin && point.y <= (height as f32 + margin) {
-                    
-                    // Filter out very acute angles
-                    let angle = lines[i].angle_with(&lines[j]);
-                    let angle_diff = (angle - 90.0).abs();
-                    
-                    if angle_diff < 60.0 {
-                        corners.push(point);
-                    }
-                }
-            }
-        }
-    }
-    
-    if corners.len() < 4 {
-        return Err(format!("Not enough corners found: {}", corners.len()));
-    }
-    
-    // Generate and score all possible quadrilaterals
-    let min_area = (width * height) as f32 * 0.05; // At least 5% of image area
-    let mut best_quad: Option<Quadrilateral> = None;
-    let mut max_score = 0.0;
-    
-    let max_corners = corners.len().min(12);
-    
-    for i in 0..max_corners {
-        for j in (i + 1)..max_corners {
-            for k in (j + 1)..max_corners {
-                for l in (k + 1)..max_corners {
-                    let quad_corners = [corners[i], corners[j], corners[k], corners[l]];
-                    
-                    if let Some(ordered) = order_corners(&quad_corners) {
-                        let quad = Quadrilateral::new(ordered, &edges);
-                        
-                        if quad.is_valid(min_area) && quad.score > max_score {
-                            max_score = quad.score;
-                            best_quad = Some(quad);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    let quad = best_quad.ok_or_else(|| "No valid quadrilateral found".to_string())?;
-    
-    // Compute homography for perspective transform
-    let projection = compute_homography_matrix(&quad.corners, result_width as f32, result_height as f32);
-    
-    // Create output image with the desired dimensions
-    let mut warped_image = RgbImage::new(result_width, result_height);
-    
-    // Warp the image using the computed homography
-    warp_into(
-        rgb_image,
-        &projection,
-        Interpolation::Bilinear,
-        imageproc::image::Rgb([255u8, 255u8, 255u8]), // White background
-        &mut warped_image,
-    );
-    
-    Ok(warped_image)
-}
-
-/// WASM-compatible function to detect document and warp it to a rectangle
-/// 
-/// This function:
-/// 1. Converts ImageData (RGBA) to RGB imageproc image
-/// 2. Calls detect_and_warp_document for processing
-/// 3. Converts result back to ImageData for WASM/JS
-pub fn extract_paper_hough2(
-    image_data: ImageData,
-    result_width: u32,
-    result_height: u32,
-) -> Result<ImageData, JsValue> {
-    // Get image dimensions
-    let width = image_data.width();
-    let height = image_data.height();
-    let data = image_data.data().0;
-    
-    // Convert RGBA ImageData to RGB (skip alpha channel)
-    let rgb_data: Vec<u8> = data
-        .chunks(4)
-        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
-        .collect();
-    
-    // Create RGB image from the data
-    let rgb_image = RgbImage::from_raw(width, height, rgb_data)
-        .ok_or_else(|| JsValue::from_str("Failed to create RGB image from ImageData"))?;
-    
-    // Log detected corners for debugging
-    // (moved logging here since detect_and_warp_document is library code without web_sys)
-    
-    // Process the image
-    let warped_image = detect_and_warp_document(&rgb_image, result_width, result_height)
-        .map_err(|e| JsValue::from_str(&e))?;
-    
-    // Convert RGB back to RGBA for ImageData
-    let rgba_data: Vec<u8> = warped_image
-        .pixels()
-        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255u8])
-        .collect();
-    
-    // Create and return ImageData
-    ImageData::new_with_u8_clamped_array_and_sh(
-        Clamped(&rgba_data),
-        result_width,
-        result_height,
-    )
-    .map_err(|e| JsValue::from_str(&format!("Failed to create ImageData: {:?}", e)))
 }
