@@ -1,11 +1,11 @@
 [package]
-name = "jscanify-wasm"
+name = "wasmcanify"
 version = "1.4.0"
-authors = ["ColonelParrot and contributors"]
+authors = [""]
 edition = "2021"
 license = "MIT"
 description = "Rust WASM port of jscanify - document scanner library"
-repository = "https://github.com/puffinsoft/jscanify"
+repository = ""
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -24,12 +24,10 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 futures-channel = "0.3"
 nalgebra = "0.33"
-photon-rs = "0.3"
 wgpu = "22"
 bytemuck = { version = "1.14", features = ["derive"] }
 imageproc = "0.25"
 gloo-console = "0.3.0"
-kornia = "0.1.9"
 
 [features]
 default = []
@@ -39,7 +37,7 @@ wasm-bindgen-test = "0.3"
 criterion = "0.5"
 
 [[bench]]
-name = "perspective_transform"
+name = "detect_document"
 harness = false
 
 [profile.release]
