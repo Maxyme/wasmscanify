@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>jscanify vs WASM Benchmark</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .info-box {
+            background: #e3f2fd;
+            border-left: 4px solid #2196f3;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+        }
+        label {
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #555;
+        }
+        input, select, button {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        button {
+            background: #2196f3;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #1976d2;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .canvas-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .canvas-wrapper {
+            text-align: center;
+        }
+        .canvas-wrapper h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        canvas {
+            max-width: 100%;
+            border: 2px solid #ddd;
+            border-radius: 4px;
+            display: block;
+            margin: 0 auto;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background: #2196f3;
+            color: white;
+            font-weight: bold;
+        }
+        tr:hover {
+            background: #f5f5f5;
+        }
+        .metric {
+            font-weight: bold;
+            font-size: 24px;
+            color: #2196f3;
+        }
+        .speedup {
+            color: #4caf50;
+            font-weight: bold;
+        }
+        .progress {
+            display: none;
+            margin: 20px 0;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #e0e0e0;
+            border-radius: 15px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #2196f3, #4caf50);
+            transition: width 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+        }
+        .supported {
+            color: #4caf50;
+        }
+        .not-supported {
+            color: #f44336;
+        }
+    </style>
+    <script src="https://docs.opencv.org/4.7.0/opencv.js" async></script>
+    <script src="https://cdn.jsdelivr.net/gh/ColonelParrot/jscanify@master/src/jscanify.min.js"></script>
+</head>
+<body>
+    <h1>🚀 jscanify vs WASM Performance Benchmark</h1>
+    
+    <div class="container">
+        <div id="statusBox" class="info-box">
+            <strong>Browser:</strong> <span id="browserInfo"></span><br>
+            <strong>WASM Status:</strong> <span id="wasmStatus">Loading...</span>
+        </div>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="imageInput">Select Test Image</label>
+                <input type="file" id="imageInput" accept="image/*">
+            </div>
+            <div class="control-group">
+                <label for="outputWidth">Output Width</label>
+                <input type="number" id="outputWidth" value="1000" min="100" max="4000">
+            </div>
+            <div class="control-group">
+                <label for="outputHeight">Output Height</label>
+                <input type="number" id="outputHeight" value="1414" min="100" max="4000">
+            </div>
+            <div class="control-group">
+                <label for="iterations">Benchmark Iterations</label>
+                <select id="iterations">
+                    <option value="1" selected>1 (Demo)</option>
+                    <option value="5">5 (Quick)</option>
+                    <option value="10">10 (Standard)</option>
+                    <option value="20">20 (Thorough)</option>
+                    <option value="50">50 (Very Thorough)</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button id="loadTestImage">Load Sample Image (tests/test.png)</button>
+            <button id="runBenchmark" disabled>Run Full Benchmark (Both)</button>
+            <button id="runJsOnly">Run JS Original Only</button>
+            <button id="runRustOnly" disabled>Run WASM Rust Only</button>
+        </div>
+
+        <div id="progress" class="progress">
+            <div class="progress-bar">
+                <div id="progressFill" class="progress-fill" style="width: 0%">0%</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="canvas-container">
+        <div class="canvas-wrapper">
+            <h3>Original Image</h3>
+            <canvas id="originalCanvas"></canvas>
+            <p id="imageDimensions"></p>
+        </div>
+        <div class="canvas-wrapper">
+            <h3>JS Original Result</h3>
+            <canvas id="jsCanvas"></canvas>
+        </div>
+        <div class="canvas-wrapper">
+            <h3>WASM Rust Result</h3>
+            <canvas id="rustCanvas"></canvas>
+        </div>
+    </div>
+
+    <div class="container results" id="resultsContainer" style="display: none;">
+        <h2>📊 Benchmark Results</h2>
+        <table id="resultsTable">
+            <thead>
+                <tr>
+                    <th>Method</th>
+                    <th>Min Time</th>
+                    <th>Max Time</th>
+                    <th>Average Time</th>
+                    <th>Median Time</th>
+                    <th>Speedup</th>
+                </tr>
+            </thead>
+            <tbody id="resultsBody">
+            </tbody>
+        </table>
+
+        <div style="margin-top: 20px;">
+            <h3>Performance Summary</h3>
+            <div id="summary"></div>
+        </div>
+    </div>
+
+    <script type="module">
+        import init, { Jscanify as JscanifyWasm } from './pkg/jscanify_wasm.js';
+
+        let scanner;
+        let jsScanner;
+        let currentImageData;
+        let imageWidth, imageHeight;
+
+        // Check browser
+        document.getElementById('browserInfo').textContent = navigator.userAgent.split(') ')[0] + ')';
+
+        // Initialize WASM
+        async function initWasm() {
+            try {
+                await init();
+                scanner = new JscanifyWasm();
+                document.getElementById('wasmStatus').innerHTML = '<span class="supported">✅ Loaded</span>';
+                document.getElementById('runBenchmark').disabled = false;
+                document.getElementById('runRustOnly').disabled = false;
+            } catch (error) {
+                document.getElementById('wasmStatus').innerHTML = 
+                    '<span class="not-supported">❌ Failed to load: ' + error.message + '</span>';
+                console.error('WASM init error:', error);
+            }
+        }
+
+        async function initJs() {
+            // JS library is loaded via script tag
+            jsScanner = new jscanify();
+            console.log('JS jscanify is ready');
+        }
+
+        // Load image to canvas
+        function loadImageToCanvas(file) {
+            return new Promise((resolve) => {
+                const img = new Image();
+                const reader = new FileReader();
+                
+                reader.onload = (e) => {
+                    img.onload = () => {
+                        const canvas = document.getElementById('originalCanvas');
+                        const ctx = canvas.getContext('2d');
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        ctx.drawImage(img, 0, 0);
+                        
+                        imageWidth = img.width;
+                        imageHeight = img.height;
+                        document.getElementById('imageDimensions').textContent = 
+                            `${imageWidth} × ${imageHeight}px`;
+                        
+                        currentImageData = ctx.getImageData(0, 0, img.width, img.height);
+                        resolve(currentImageData);
+                    };
+                    img.src = e.target.result;
+                };
+                
+                reader.readAsDataURL(file);
+            });
+        }
+
+        // Load sample test image
+        document.getElementById('loadTestImage').addEventListener('click', async () => {
+            try {
+                const response = await fetch('tests/test.png');
+                const blob = await response.blob();
+                const file = new File([blob], 'test.png', { type: 'image/png' });
+                await loadImageToCanvas(file);
+            } catch (error) {
+                alert('Failed to load sample image: ' + error.message);
+            }
+        });
+
+        // Image input handler
+        document.getElementById('imageInput').addEventListener('change', async (e) => {
+            if (e.target.files.length > 0) {
+                await loadImageToCanvas(e.target.files[0]);
+            }
+        });
+
+        // Update progress
+        function updateProgress(current, total) {
+            const percent = Math.round((current / total) * 100);
+            const progressFill = document.getElementById('progressFill');
+            progressFill.style.width = percent + '%';
+            progressFill.textContent = percent + '%';
+        }
+
+        // Run benchmark
+        async function runBenchmark(method, iterations) {
+            const times = [];
+            // Get dimensions from inputs
+            const outputWidth = parseInt(document.getElementById('outputWidth').value) || 1000;
+            const outputHeight = parseInt(document.getElementById('outputHeight').value) || 1414;
+            
+            console.log(`Running ${method.toUpperCase()} benchmark for ${iterations} iterations...`);
+            
+            for (let i = 0; i < iterations; i++) {
+                const start = performance.now();
+                
+                let result;
+                
+                if (method === 'js') {
+                    // Use original JS library
+                    const canvas = document.getElementById('originalCanvas');
+                    const resultCanvas = document.createElement('canvas');
+                    resultCanvas.width = outputWidth;
+                    resultCanvas.height = outputHeight;
+                    
+                    // jscanify original uses canvas directly
+                    result = jsScanner.extractPaper(canvas, resultCanvas.width, resultCanvas.height);
+                    
+                    // result is already a canvas, get ImageData from it
+                    const ctx = result.getContext('2d');
+                    result = ctx.getImageData(0, 0, result.width, result.height);
+                } else if (method === 'rust') {
+                    // Use new Rust Hough transform method
+                    result = scanner.extractPaperHough(
+                        currentImageData, 
+                        outputWidth, 
+                        outputHeight,
+                        true  // warp_document = true
+                    );
+                }
+                
+                const end = performance.now();
+                times.push(end - start);
+                
+                // Show result on canvas (last iteration)
+                if (i === iterations - 1) {
+                    const canvas = document.getElementById(method + 'Canvas');
+                    const ctx = canvas.getContext('2d');
+                    canvas.width = outputWidth;
+                    canvas.height = outputHeight;
+
+                    if (result) {
+                        ctx.putImageData(result, 0, 0);
+                    } else {
+                        console.error('Result is not ImageData:', result);
+                    }
+                }
+                
+                updateProgress(i + 1, iterations);
+                
+                // Small delay to prevent blocking UI
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+
+            return times;
+        }
+
+        // Calculate statistics
+        function calculateStats(times) {
+            const sorted = [...times].sort((a, b) => a - b);
+            return {
+                min: Math.min(...times),
+                max: Math.max(...times),
+                avg: times.reduce((a, b) => a + b, 0) / times.length,
+                median: sorted[Math.floor(sorted.length / 2)]
+            };
+        }
+
+        // Display results
+        function displayResults(jsStats, rustStats) {
+            const tbody = document.getElementById('resultsBody');
+            tbody.innerHTML = '';
+
+            // Determine baseline (JS for comparison)
+            const baseline = jsStats;
+
+            // JS Original row
+            if (jsStats) {
+                const jsRow = tbody.insertRow();
+                jsRow.innerHTML = `
+                    <td><strong>JS Original</strong></td>
+                    <td>${jsStats.min.toFixed(2)} ms</td>
+                    <td>${jsStats.max.toFixed(2)} ms</td>
+                    <td>${jsStats.avg.toFixed(2)} ms</td>
+                    <td>${jsStats.median.toFixed(2)} ms</td>
+                    <td>1.0x (baseline)</td>
+                `;
+            }
+
+            // WASM Rust row
+            if (rustStats) {
+                const rustSpeedup = baseline ? 
+                    `${(baseline.avg / rustStats.avg).toFixed(2)}x ${rustStats.avg < baseline.avg ? 'faster' : 'slower'}` : 
+                    '1.0x (baseline)';
+                const rustRow = tbody.insertRow();
+                rustRow.innerHTML = `
+                    <td><strong>WASM Rust</strong></td>
+                    <td>${rustStats.min.toFixed(2)} ms</td>
+                    <td>${rustStats.max.toFixed(2)} ms</td>
+                    <td>${rustStats.avg.toFixed(2)} ms</td>
+                    <td>${rustStats.median.toFixed(2)} ms</td>
+                    <td><span class="speedup">${rustSpeedup}</span></td>
+                `;
+            }
+
+            // Summary
+            const outputWidth = document.getElementById('outputWidth').value;
+            const outputHeight = document.getElementById('outputHeight').value;
+            let summaryHTML = `<p>Output size: <strong>${outputWidth}×${outputHeight}px</strong></p>`;
+            
+            if (jsStats && rustStats) {
+                const faster = rustStats.avg < jsStats.avg ? 'WASM Rust' : 'JS Original';
+                const ratio = (jsStats.avg / rustStats.avg).toFixed(2);
+                const timeSaved = (jsStats.avg - rustStats.avg).toFixed(2);
+                
+                summaryHTML += `
+                    <p><strong>JS Original:</strong> ${jsStats.avg.toFixed(2)} ms</p>
+                    <p><strong>WASM Rust:</strong> ${rustStats.avg.toFixed(2)} ms</p>
+                    <p><strong>Winner:</strong> <span class="metric">${faster}</span></p>
+                    <p><strong>Speedup:</strong> <span class="metric">${ratio}x</span></p>
+                    <p><strong>Time saved:</strong> <span class="metric">${timeSaved} ms</span> per operation</p>
+                `;
+            } else {
+                const stats = jsStats || rustStats;
+                summaryHTML += `<p>Average processing time: <span class="metric">${stats.avg.toFixed(2)} ms</span></p>`;
+            }
+
+            document.getElementById('summary').innerHTML = summaryHTML;
+            document.getElementById('resultsContainer').style.display = 'block';
+        }
+
+        // Run full benchmark (JS + Rust)
+        document.getElementById('runBenchmark').addEventListener('click', async () => {
+            if (!currentImageData) {
+                alert('Please load an image first');
+                return;
+            }
+
+            document.getElementById('progress').style.display = 'block';
+            document.getElementById('runBenchmark').disabled = true;
+            
+            const iterations = parseInt(document.getElementById('iterations').value);
+
+            try {
+                console.log('Running JS Original benchmark...');
+                const jsTimes = await runBenchmark('js', iterations);
+                const jsStats = calculateStats(jsTimes);
+
+                console.log('Running WASM Rust benchmark...');
+                const rustTimes = await runBenchmark('rust', iterations);
+                const rustStats = calculateStats(rustTimes);
+
+                displayResults(jsStats, rustStats);
+            } catch (error) {
+                alert('Benchmark failed: ' + error.message);
+                console.error(error);
+            } finally {
+                document.getElementById('progress').style.display = 'none';
+                document.getElementById('runBenchmark').disabled = false;
+            }
+        });
+
+        // Run JS Original only
+        document.getElementById('runJsOnly').addEventListener('click', async () => {
+            if (!currentImageData) {
+                alert('Please load an image first');
+                return;
+            }
+
+            document.getElementById('progress').style.display = 'block';
+            document.getElementById('runJsOnly').disabled = true;
+            
+            const iterations = parseInt(document.getElementById('iterations').value);
+
+            try {
+                const jsTimes = await runBenchmark('js', iterations);
+                const jsStats = calculateStats(jsTimes);
+                displayResults(jsStats, null);
+            } catch (error) {
+                alert('Benchmark failed: ' + error.message);
+                console.error(error);
+            } finally {
+                document.getElementById('progress').style.display = 'none';
+                document.getElementById('runJsOnly').disabled = false;
+            }
+        });
+
+        // Run Rust only
+        document.getElementById('runRustOnly').addEventListener('click', async () => {
+            if (!currentImageData) {
+                alert('Please load an image first');
+                return;
+            }
+
+            document.getElementById('progress').style.display = 'block';
+            document.getElementById('runRustOnly').disabled = true;
+            
+            const iterations = parseInt(document.getElementById('iterations').value);
+
+            try {
+                const rustTimes = await runBenchmark('rust', iterations);
+                const rustStats = calculateStats(rustTimes);
+                displayResults(null, rustStats);
+            } catch (error) {
+                alert('Benchmark failed: ' + error.message);
+                console.error(error);
+            } finally {
+                document.getElementById('progress').style.display = 'none';
+                document.getElementById('runRustOnly').disabled = false;
+            }
+        });
+
+        // Initialize on load
+        initWasm();
+        initJs();
+    </script>
+</body>
+</html>
