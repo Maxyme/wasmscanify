@@ -63,5 +63,20 @@ fn benchmark_warping(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, benchmark_detection, benchmark_warping);
+fn benchmark_real_image(c: &mut Criterion) {
+    // Load the real test image
+    let img_path = "tests/test.png";
+    // Use the image crate directly to open the file
+    let img = image::open(img_path).expect("Failed to open test image");
+    // Convert to grayscale as required by the detection algorithm
+    let gray_image = img.to_luma8();
+
+    c.bench_function("detect_document_real_image", |b| {
+        b.iter(|| {
+            find_best_quadrilateral(black_box(&gray_image))
+        })
+    });
+}
+
+criterion_group!(benches, benchmark_detection, benchmark_warping, benchmark_real_image);
 criterion_main!(benches);
