@@ -81,9 +81,9 @@ impl Quadrilateral {
     }
     
     /// Score quadrilateral by summing edge strength along its perimeter
-    fn compute_score(corners: &[Point; 4], edge_image: &GrayImage) -> f32 {
-        let width = edge_image.width() as f32;
-        let height = edge_image.height() as f32;
+    fn compute_score(corners: &[Point; 4], image: &GrayImage) -> f32 {
+        let width = image.width() as f32;
+        let height = image.height() as f32;
         let mut total_score = 0.0;
         let mut sample_count = 0;
         
@@ -107,7 +107,7 @@ impl Quadrilateral {
                 
                 // Check if point is within image bounds
                 if x >= 0.0 && x < width && y >= 0.0 && y < height {
-                    let pixel = edge_image.get_pixel(x as u32, y as u32);
+                    let pixel = image.get_pixel(x as u32, y as u32);
                     total_score += pixel[0] as f32;
                     sample_count += 1;
                 }
@@ -221,10 +221,10 @@ pub fn find_best_quadrilateral(gray: &GrayImage) -> Result<Quadrilateral, String
     let height = gray.height();
     
     // Apply Gaussian blur to reduce noise
-    let blurred = imageproc::filter::gaussian_blur_f32(gray, 2.0);
+    //let blurred = imageproc::filter::gaussian_blur_f32(gray, 2.0);
     
     // Apply Canny edge detection
-    let edges = canny(&blurred, 50.0, 150.0);
+    //let edges = canny(&blurred, 50.0, 150.0);
     
     // Detect lines using Hough transform
     let options = LineDetectionOptions {
@@ -232,7 +232,7 @@ pub fn find_best_quadrilateral(gray: &GrayImage) -> Result<Quadrilateral, String
         suppression_radius: 15,     // Suppress nearby lines in Hough space
     };
     
-    let detected_lines = detect_lines(&edges, options);
+    let detected_lines = detect_lines(&gray, options);
     
     if detected_lines.len() < 4 {
         return Err(format!("Not enough lines detected: {}", detected_lines.len()));
@@ -284,7 +284,7 @@ pub fn find_best_quadrilateral(gray: &GrayImage) -> Result<Quadrilateral, String
                     let quad_corners = [corners[i], corners[j], corners[k], corners[l]];
                     
                     if let Some(ordered) = order_corners(&quad_corners) {
-                        let quad = Quadrilateral::new(ordered, &edges);
+                        let quad = Quadrilateral::new(ordered, &gray);
                         
                         if quad.is_valid(min_area) && quad.score > max_score {
                             max_score = quad.score;
