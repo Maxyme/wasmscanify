@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use jscanify_wasm::detect_document::{find_best_quadrilateral, compute_homography_matrix};
+use wasmcanify::detect_document::{find_best_quadrilateral, compute_homography_matrix};
 use imageproc::image::{Rgb, RgbImage, GrayImage, Luma};
 use imageproc::drawing::draw_filled_rect_mut;
 use imageproc::rect::Rect;
@@ -34,6 +34,25 @@ fn benchmark_detection(c: &mut Criterion) {
     });
 }
 
+fn benchmark_detection_downscaled(c: &mut Criterion) {
+    let gray_image = generate_gray_test_image(800, 600);
+
+    c.bench_function("detect_document_with_downscaling", |b| {
+        b.iter(|| {
+            // Resize (simulate the optimization in extract_paper_hough)
+            let resized = imageproc::image::imageops::resize(
+                black_box(&gray_image),
+                600,
+                450,
+                imageproc::image::imageops::FilterType::Triangle,
+            );
+            
+            // Detect
+            find_best_quadrilateral(black_box(&resized))
+        })
+    });
+}
+
 fn benchmark_warping(c: &mut Criterion) {
     let gray_image = generate_gray_test_image(800, 600);
     let rgb_image = generate_rgb_test_image(800, 600);
@@ -63,5 +82,5 @@ fn benchmark_warping(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, benchmark_detection, benchmark_warping);
+criterion_group!(benches, benchmark_detection, benchmark_detection_downscaled, benchmark_warping);
 criterion_main!(benches);

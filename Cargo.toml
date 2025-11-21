@@ -28,6 +28,8 @@ wgpu = "22"
 bytemuck = { version = "1.14", features = ["derive"] }
 imageproc = "0.25"
 gloo-console = "0.3.0"
+rayon = "1.10"
+wasm-bindgen-rayon = "1.2"
 
 [features]
 default = []
@@ -44,3 +46,6 @@ harness = false
 opt-level = "z"
 lto = true
 codegen-units = 1
+
+[build]
+rustflags = ["-C", "target-feature=+simd128"]

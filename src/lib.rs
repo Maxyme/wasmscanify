@@ -2,6 +2,8 @@ use wasm_bindgen::prelude::*;
 use web_sys::ImageData;
 pub mod detect_document;
 
+pub use wasm_bindgen_rayon::init_thread_pool;
+
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = console)]

@@ -1,4 +1,4 @@
-use imageproc::image::{GrayImage, RgbImage};
+use imageproc::image::{GrayImage, RgbImage, GenericImageView};
 use imageproc::edges::canny;
 use imageproc::hough::{detect_lines, LineDetectionOptions, PolarLine};
 use imageproc::geometric_transformations::{warp_into, Interpolation, Projection};
@@ -6,6 +6,7 @@ use std::f32::consts::PI;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::Clamped;
 use web_sys::ImageData;
+use rayon::prelude::*;
 
 /// Represents a corner point in 2D space
 #[derive(Debug, Clone, Copy)]
@@ -107,7 +108,9 @@ impl Quadrilateral {
                 
                 // Check if point is within image bounds
                 if x >= 0.0 && x < width && y >= 0.0 && y < height {
-                    let pixel = edge_image.get_pixel(x as u32, y as u32);
+                    // Optimization: Use unsafe unchecked access for speed
+                    // We already checked bounds above
+                    let pixel = unsafe { edge_image.unsafe_get_pixel(x as u32, y as u32) };
                     total_score += pixel[0] as f32;
                     sample_count += 1;
                 }
@@ -240,6 +243,7 @@ pub fn find_best_quadrilateral(gray: &GrayImage) -> Result<Quadrilateral, String
     
     // Convert polar lines to Cartesian form
     let lines: Vec<Line> = detected_lines.iter()
+        .take(30) // Optimization: Limit to top 30 strongest lines to reduce N^2 complexity
         .map(|pl| Line::from_polar(pl))
         .collect();
     
@@ -272,12 +276,14 @@ pub fn find_best_quadrilateral(gray: &GrayImage) -> Result<Quadrilateral, String
     
     // Generate and score all possible quadrilaterals
     let min_area = (width * height) as f32 * 0.05; // At least 5% of image area
-    let mut best_quad: Option<Quadrilateral> = None;
-    let mut max_score = 0.0;
     
     let max_corners = corners.len().min(12);
     
-    for i in 0..max_corners {
+    // Use Rayon to parallelize the search
+    let best_quad = (0..max_corners).into_par_iter().map(|i| {
+        let mut local_best: Option<Quadrilateral> = None;
+        let mut local_max_score = 0.0;
+
         for j in (i + 1)..max_corners {
             for k in (j + 1)..max_corners {
                 for l in (k + 1)..max_corners {
@@ -286,15 +292,23 @@ pub fn find_best_quadrilateral(gray: &GrayImage) -> Result<Quadrilateral, String
                     if let Some(ordered) = order_corners(&quad_corners) {
                         let quad = Quadrilateral::new(ordered, &edges);
                         
-                        if quad.is_valid(min_area) && quad.score > max_score {
-                            max_score = quad.score;
-                            best_quad = Some(quad);
+                        if quad.is_valid(min_area) && quad.score > local_max_score {
+                            local_max_score = quad.score;
+                            local_best = Some(quad);
                         }
                     }
                 }
             }
         }
-    }
+        local_best
+    }).reduce(|| None, |a, b| {
+        match (a, b) {
+            (Some(qa), Some(qb)) => if qa.score > qb.score { Some(qa) } else { Some(qb) },
+            (Some(qa), None) => Some(qa),
+            (None, Some(qb)) => Some(qb),
+            (None, None) => None,
+        }
+    });
     
     best_quad.ok_or_else(|| "No valid quadrilateral found".to_string())
 }
@@ -457,15 +471,19 @@ pub fn extract_paper_hough(
     let height = image_data.height();
     let data = image_data.data().0;
     
+    // Optimization: Direct copy to RgbImage to avoid intermediate Vec allocation
     // Convert RGBA ImageData to RGB (skip alpha channel)
-    let rgb_data: Vec<u8> = data
-        .chunks(4)
-        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
-        .collect();
+    let mut rgb_image = RgbImage::new(width, height);
     
-    // Create RGB image from the data
-    let rgb_image = RgbImage::from_raw(width, height, rgb_data)
-        .ok_or_else(|| JsValue::from_str("Failed to create RGB image from ImageData"))?;
+    // Iterate over pixels and copy data
+    // We use pixels_mut() which iterates in row-major order, same as the data buffer
+    for (i, pixel) in rgb_image.pixels_mut().enumerate() {
+        let idx = i * 4;
+        // Safety check not strictly needed if we trust ImageData, but good for robustness
+        if idx + 2 < data.len() {
+            pixel.0 = [data[idx], data[idx+1], data[idx+2]];
+        }
+    }
     
     // Convert to grayscale for processing
     let gray = imageproc::image::imageops::grayscale(&rgb_image);
@@ -499,7 +517,8 @@ pub fn extract_paper_hough(
         warped_image
     } else {
         // Create output image with highlighted quadrilateral
-        let mut output_image = rgb_image.clone();
+        // Optimization: Reuse rgb_image instead of cloning
+        let mut output_image = rgb_image;
         
         // Draw the quadrilateral with highlighted edges and corners
         draw_quadrilateral_on_image(&mut output_image, &quad);
@@ -551,15 +570,17 @@ pub fn extract_paper_hough_debug(
     let height = image_data.height();
     let data = image_data.data().0;
     
+    // Optimization: Direct copy to RgbImage to avoid intermediate Vec allocation
     // Convert RGBA ImageData to RGB (skip alpha channel)
-    let rgb_data: Vec<u8> = data
-        .chunks(4)
-        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
-        .collect();
+    let mut rgb_image = RgbImage::new(width, height);
     
-    // Create RGB image from the data
-    let rgb_image = RgbImage::from_raw(width, height, rgb_data)
-        .ok_or_else(|| JsValue::from_str("Failed to create RGB image from ImageData"))?;
+    // Iterate over pixels and copy data
+    for (i, pixel) in rgb_image.pixels_mut().enumerate() {
+        let idx = i * 4;
+        if idx + 2 < data.len() {
+            pixel.0 = [data[idx], data[idx+1], data[idx+2]];
+        }
+    }
     
     // Convert to grayscale for processing
     let gray = imageproc::image::imageops::grayscale(&rgb_image);
@@ -578,7 +599,8 @@ pub fn extract_paper_hough_debug(
     ).into());
     
     // Create output image with debug visualization
-    let mut output_image = rgb_image.clone();
+    // Optimization: Reuse rgb_image instead of cloning
+    let mut output_image = rgb_image;
     
     // Draw homography debug visualization
     draw_homography_debug(&mut output_image, &quad.corners, result_width as f32, result_height as f32);
