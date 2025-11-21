@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use jscanify_wasm::detect_document::{find_best_quadrilateral, compute_homography_matrix};
+use wasmcanify::detect_document::{find_best_quadrilateral, compute_homography_matrix};
 use imageproc::image::{Rgb, RgbImage, GrayImage, Luma};
 use imageproc::drawing::draw_filled_rect_mut;
 use imageproc::rect::Rect;
@@ -65,7 +65,7 @@ fn benchmark_warping(c: &mut Criterion) {
 
 fn benchmark_real_image(c: &mut Criterion) {
     // Load the real test image
-    let img_path = "tests/test.png";
+    let img_path = "tests/test.jpg";
     // Use the image crate directly to open the file
     let img = image::open(img_path).expect("Failed to open test image");
     // Convert to grayscale as required by the detection algorithm

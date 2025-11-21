@@ -221,10 +221,10 @@ pub fn find_best_quadrilateral(gray: &GrayImage) -> Result<Quadrilateral, String
     let height = gray.height();
     
     // Apply Gaussian blur to reduce noise
-    //let blurred = imageproc::filter::gaussian_blur_f32(gray, 2.0);
+    let blurred = imageproc::filter::gaussian_blur_f32(gray, 2.0);
     
     // Apply Canny edge detection
-    //let edges = canny(&blurred, 50.0, 150.0);
+    let edges = canny(&blurred, 50.0, 150.0);
     
     // Detect lines using Hough transform
     let options = LineDetectionOptions {
@@ -232,7 +232,7 @@ pub fn find_best_quadrilateral(gray: &GrayImage) -> Result<Quadrilateral, String
         suppression_radius: 15,     // Suppress nearby lines in Hough space
     };
     
-    let detected_lines = detect_lines(&gray, options);
+    let detected_lines = detect_lines(&edges, options);
     
     if detected_lines.len() < 4 {
         return Err(format!("Not enough lines detected: {}", detected_lines.len()));
@@ -284,7 +284,7 @@ pub fn find_best_quadrilateral(gray: &GrayImage) -> Result<Quadrilateral, String
                     let quad_corners = [corners[i], corners[j], corners[k], corners[l]];
                     
                     if let Some(ordered) = order_corners(&quad_corners) {
-                        let quad = Quadrilateral::new(ordered, &gray);
+                        let quad = Quadrilateral::new(ordered, &edges);
                         
                         if quad.is_valid(min_area) && quad.score > max_score {
                             max_score = quad.score;
