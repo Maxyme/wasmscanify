@@ -232,7 +232,7 @@
     </div>
 
     <script type="module">
-        import init, { Jscanify as JscanifyWasm } from './pkg/jscanify_wasm.js';
+        import init, { Jscanify } from './pkg/wasmcanify.js';
 
         let scanner;
         let jsScanner;
@@ -246,7 +246,7 @@
         async function initWasm() {
             try {
                 await init();
-                scanner = new JscanifyWasm();
+                scanner = new Jscanify();
                 document.getElementById('wasmStatus').innerHTML = '<span class="supported">✅ Loaded</span>';
                 document.getElementById('runBenchmark').disabled = false;
                 document.getElementById('runRustOnly').disabled = false;
@@ -295,9 +295,9 @@
         // Load sample test image
         document.getElementById('loadTestImage').addEventListener('click', async () => {
             try {
-                const response = await fetch('tests/test.png');
+                const response = await fetch('tests/test.jpg');
                 const blob = await response.blob();
-                const file = new File([blob], 'test.png', { type: 'image/png' });
+                const file = new File([blob], 'test.jpg', { type: 'image/jpeg' });
                 await loadImageToCanvas(file);
             } catch (error) {
                 alert('Failed to load sample image: ' + error.message);
@@ -352,7 +352,7 @@
                         currentImageData, 
                         outputWidth, 
                         outputHeight,
-                        true  // warp_document = true
+                        false  // show_lines
                     );
                 }
                 

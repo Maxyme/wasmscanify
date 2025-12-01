@@ -14,9 +14,7 @@ fn main() {
     println!("Image loaded: {}x{}", gray_image.width(), gray_image.height());
     println!("Starting detection loop for profiling...");
 
-    // Run detection multiple times to capture a good profile
-    // 100 iterations should be enough for a decent flamegraph
-    for i in 0..100 {
+    for i in 0..10 {
         if i % 10 == 0 {
             println!("Iteration {}", i);
         }

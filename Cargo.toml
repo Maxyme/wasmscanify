@@ -20,28 +20,38 @@ web-sys = { version = "0.3", features = [
     "Navigator",
     "Gpu",
 ] }
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
-futures-channel = "0.3"
-nalgebra = "0.33"
-wgpu = "22"
-bytemuck = { version = "1.14", features = ["derive"] }
+#wasm-bindgen-futures = "0.4"
+#js-sys = "0.3"
+#futures-channel = "0.3"
+#nalgebra = "0.33"
+#wgpu = "22"
+#bytemuck = { version = "1.14", features = ["derive"] }
 imageproc = "0.25"
-gloo-console = "0.3.0"
+image = { version = "0.25.9"}
+itertools = "0.14.0"
+# rayon-wasm = "1.6.2"
+# gloo-console = "0.3.0"
 
 [features]
 default = []
 
 [dev-dependencies]
-wasm-bindgen-test = "0.3"
-criterion = "0.5"
-image = "0.25.9"
+#wasm-bindgen-test = "0.3"
+criterion = { version = "0.8", default-features = false }
 
 [[bench]]
 name = "detect_document"
 harness = false
 
 [profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
+#opt-level = "z"
+#lto = true
+#codegen-units = 1
+# debug = true
+
+[profile.bench]
+debug = true
+
+[profile.profiling]
+inherits = "release"
+debug = true

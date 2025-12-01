@@ -33,9 +33,9 @@ impl Jscanify {
         image_data: ImageData,
         result_width: u32,
         result_height: u32,
-        warp_image: bool
+        show_lines: bool
     ) -> Result<ImageData, JsValue> {
-        detect_document::extract_paper_hough(image_data, result_width, result_height, warp_image)
+        detect_document::extract_paper_hough(image_data, result_width, result_height, show_lines)
     }
 }
 

@@ -31,3 +31,6 @@ package-lock.json
 # Testing
 *.profraw
 *.profdata
+
+# benchmarks
+.gz
